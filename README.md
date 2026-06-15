@@ -1,88 +1,75 @@
-# Локальный Kafka-кластер (Docker)
+# Потоковая обработка сообщений (Kafka + Faust)
 
-Три брокера Apache Kafka и один Zookeeper на базе образов Confluent Platform 7.6.1. В том же `docker-compose.yaml` поднимается веб-интерфейс [Kafka UI](https://github.com/kafbat/kafka-ui) (образ `kafbat/kafka-ui`) для просмотра топиков, сообщений и состояния кластера.
+Фильтрация по блокировкам пользователей и цензура запрещённых слов. Обработчик - `stream-processor` (Faust).
 
-## Развёртывание кластера
+## Логика
 
-```bash
-docker compose up -d
-```
+| Компонент                 | Назначение                                                                                                                         |
+|---------------------------|------------------------------------------------------------------------------------------------------------------------------------|
+| `apply_block_events`      | Читает `blocked_users`, обновляет таблицу `user_blocks`                                                                            |
+| `process_messages`        | Читает `messages`, отбрасывает сообщения от заблокированных отправителей, маскирует запрещённые слова, пишет в `filtered_messages` |
+| `apply_word_updates`      | Обновляет таблицу `banned_words` (начальный набор - `BANNED_WORDS`, далее HTTP `:6066`)                                            |
+| `censor.apply_censorship` | Маскировка слов символом `*`                                                                                                       |
 
-Остановка и удаление контейнеров:
+Таблицы Faust (персистентное состояние):
 
-```bash
-docker compose down
-```
+| Таблица        | Ключ         | Значение                           |
+|----------------|--------------|------------------------------------|
+| `user_blocks`  | `blocker_id` | список заблокированных `sender_id` |
+| `banned_words` | слово        | `true`, если слово запрещено       |
 
-После запуска доступны:
+Топики: `messages`, `filtered_messages`, `blocked_users` (по 3 партиции, RF=2). Топик `banned_word_updates` создаётся Faust для обновления цензуры.
 
+Модели (`models.py`): `ChatMessage`, `BlockEvent`, `WordEvent`.
 
-| Сервис    | Назначение                                  |
-| --------- | ------------------------------------------- |
-| Zookeeper | `localhost:2181`                            |
-| Kafka     | брокеры на `localhost:9092`, `9093`, `9094` |
-| Kafka UI  | `http://localhost:8080`                     |
-
-
-## Проверка, что кластер работает
-
-### 1. Состояние контейнеров
+## Запуск
 
 ```bash
-docker ps
+docker compose up -d zookeeper kafka1 kafka2 kafka3 kafka-ui kafka-init stream-processor
+docker compose logs -f stream-processor
 ```
 
-### 2. Метаданные брокеров
+При первом старте подождите ~30–60 с, пока поднимутся брокеры.
+
+## Тестирование
 
 ```bash
-docker exec kafka1 kafka-broker-api-versions --bootstrap-server kafka1:29092,kafka2:29092,kafka3:29092
+cd src
+pip install -r requirements.txt
+export BOOTSTRAP_SERVERS=localhost:9092,localhost:9093,localhost:9094
+
+python scripts/send_test_data.py
+python scripts/consume_filtered.py
 ```
 
-### 3. Список топиков
+### Тестовые данные
 
-```bash
-docker exec kafka1 kafka-topics \
-  --bootstrap-server kafka1:29092,kafka2:29092,kafka3:29092 \
-  --list
+Блокировка (`blocked_users`):
+
+```json
+{"blocker_id": "alice", "blocked_id": "bob", "action": "block"}
 ```
 
-Сразу после первого запуска список может быть пустым.
+Сообщения (`messages`):
 
-## Параметры конфигурации
+```json
+{"id": "msg-1", "sender_id": "bob", "recipient_id": "alice", "text": "Привет, alice!", "ts": 1710000000.0}
+{"id": "msg-2", "sender_id": "charlie", "recipient_id": "alice", "text": "Это сообщение содержит badword в тексте", "ts": 1710000001.0}
+{"id": "msg-3", "sender_id": "charlie", "recipient_id": "dave", "text": "Чистое сообщение без запрещённых слов", "ts": 1710000002.0}
+{"id": "msg-4", "sender_id": "dave", "recipient_id": "alice", "text": "Buy spam products now!", "ts": 1710000003.0}
+```
 
-### Zookeeper
+Скрипт `send_test_data.py` отправляет эти данные автоматически (перед сообщениями - блокировку bob у alice, пауза 5 с).
 
-| Переменная / настройка  | Значение | Смысл                                                                 |
-|-------------------------| -------- |-----------------------------------------------------------------------|
-| `ZOOKEEPER_CLIENT_PORT` | `2181`   | Порт, на котором клиенты (в том числе Kafka) подключаются к Zookeeper |
-| `ZOOKEEPER_TICK_TIME`   | `2000`   | Задает базовый интервал времени (в миллисекундах)                     |
+### Ожидаемый результат
 
+| id    | Результат                                            |
+|-------|------------------------------------------------------|
+| msg-1 | не попадает в `filtered_messages` (bob заблокирован) |
+| msg-2 | `badword` → `*******`                                |
+| msg-3 | без изменений                                        |
+| msg-4 | `spam` → `****`                                      |
 
-### Kafka (общие для трёх брокеров; отличаются ID и advertised listeners)
+Начальный список запрещённых слов: `spam,badword,offensive` (переменная `BANNED_WORDS` в `docker-compose.yaml`).
 
-| Переменная                                       | Смысл                                                                                              |
-| ------------------------------------------------ |----------------------------------------------------------------------------------------------------|
-| `KAFKA_BROKER_ID`                                | Уникальный числовой идентификатор брокера в кластере.                                              |
-| `KAFKA_ZOOKEEPER_CONNECT`                        | Адрес Zookeeper для регистрации брокеров и хранения метаданных.                                    |
-| `KAFKA_LISTENERS`                                | Определяет, на каких сетевых интерфейсах и портах брокер Kafka будет слушать входящие подключения. |
-| `KAFKA_ADVERTISED_LISTENERS`                     | Адреса, которые брокер отдаёт клиентам.                                                            |
-| `KAFKA_LISTENER_SECURITY_PROTOCOL_MAP`           | Сопоставление имён listener-ов с протоколом.                                                       |
-| `KAFKA_INTER_BROKER_LISTENER_NAME`               | Listener для общения брокеров между собой — **PLAINTEXT**.                                         |
-
-
-### Kafka UI
-
-| Переменная                          | Смысл                                  |
-| ----------------------------------- |----------------------------------------|
-| `KAFKA_CLUSTERS_0_NAME`             | Отображаемое имя кластера в интерфейсе |
-| `KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS` | Bootstrap-серверы для UI               |
-
-
-## Проверка работы Kafka через Kafka UI
-
-1. Проверить, что стек запущен: `docker compose up -d`.
-2. Открыть в браузере: **[http://localhost:8080](http://localhost:8080)**
-3. В списке кластеров выбрать кластер **local**
-4. Проверить:
-  - раздел **Brokers** — три брокера в состоянии доступности;
-  - **Topics** — список топиков;
+Добавить слово без перезапуска: `curl http://localhost:6066/banned-words/add/слово`

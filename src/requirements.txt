@@ -1,1 +1,3 @@
 confluent-kafka>=2.3.0
+faust-streaming[rocksdb,uvloop]>=0.11.0
+aiokafka>=0.10.0,<0.13.0

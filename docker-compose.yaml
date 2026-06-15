@@ -82,6 +82,42 @@ services:
       - kafka2
       - kafka3
 
+  kafka-init:
+    image: confluentinc/cp-kafka:7.6.1
+    container_name: kafka-init
+    depends_on:
+      - kafka1
+      - kafka2
+      - kafka3
+    volumes:
+      - ./src/scripts/init-topics.sh:/init-topics.sh:ro
+    entrypoint: ["/bin/bash", "/init-topics.sh"]
+    environment:
+      KAFKA_BOOTSTRAP: kafka1:29092
+    restart: "no"
+
+  stream-processor:
+    build:
+      context: ./src
+      dockerfile: Dockerfile.stream
+    container_name: stream-processor
+    environment:
+      FAUST_BROKER: kafka://kafka1:29092;kafka2:29092;kafka3:29092
+      BANNED_WORDS: spam,badword,offensive
+      FAUST_WEB_PORT: "6066"
+    ports:
+      - "6066:6066"
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      kafka1:
+        condition: service_started
+      kafka2:
+        condition: service_started
+      kafka3:
+        condition: service_started
+    restart: unless-stopped
+
   kafka-demo:
     build:
       context: ./src
@@ -93,5 +129,7 @@ services:
       - kafka2
       - kafka3
     restart: unless-stopped
+    profiles:
+      - legacy
     deploy:
       replicas: 2
