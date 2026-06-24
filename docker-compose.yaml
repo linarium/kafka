@@ -22,6 +22,7 @@ services:
     image: confluentinc/cp-kafka:7.6.1
     hostname: kafka1
     container_name: kafka1
+    restart: unless-stopped
     depends_on:
       zookeeper:
         condition: service_healthy
@@ -39,6 +40,7 @@ services:
     image: confluentinc/cp-kafka:7.6.1
     hostname: kafka2
     container_name: kafka2
+    restart: unless-stopped
     depends_on:
       zookeeper:
         condition: service_healthy
@@ -56,6 +58,7 @@ services:
     image: confluentinc/cp-kafka:7.6.1
     hostname: kafka3
     container_name: kafka3
+    restart: unless-stopped
     depends_on:
       zookeeper:
         condition: service_healthy
@@ -133,3 +136,98 @@ services:
       - legacy
     deploy:
       replicas: 2
+
+  postgres:
+    image: postgres:15
+    container_name: postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: shopdb
+    command: postgres -c wal_level=logical
+    volumes:
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d shopdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  connect:
+    build:
+      context: ./monitoring/connect
+    container_name: connect
+    ports:
+      - "8083:8083"
+      - "9404:9404"
+    environment:
+      BOOTSTRAP_SERVERS: kafka1:29092,kafka2:29092,kafka3:29092
+      GROUP_ID: connect-cluster
+      CONFIG_STORAGE_TOPIC: connect-configs
+      OFFSET_STORAGE_TOPIC: connect-offsets
+      STATUS_STORAGE_TOPIC: connect-status
+      CONFIG_STORAGE_REPLICATION_FACTOR: 2
+      OFFSET_STORAGE_REPLICATION_FACTOR: 2
+      STATUS_STORAGE_REPLICATION_FACTOR: 2
+      KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      KEY_CONVERTER_SCHEMAS_ENABLE: "false"
+      VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+    depends_on:
+      - kafka1
+      - kafka2
+      - kafka3
+      - postgres
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8083/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  connect-init:
+    image: curlimages/curl:8.5.0
+    container_name: connect-init
+    volumes:
+      - ./config/debezium-postgres-connector.json:/config/debezium-postgres-connector.json:ro
+      - ./scripts/register-debezium-connector.sh:/register-debezium-connector.sh:ro
+    entrypoint: ["/bin/sh", "/register-debezium-connector.sh"]
+    depends_on:
+      connect:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    depends_on:
+      connect:
+        condition: service_healthy
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_DEFAULT_THEME: dark
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    restart: unless-stopped
