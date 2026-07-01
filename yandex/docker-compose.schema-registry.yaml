@@ -1,0 +1,24 @@
+# Schema Registry -> топик _schemas в Yandex Kafka
+# Запуск: ./start-schema-registry.sh
+
+services:
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.7.1
+    container_name: yandex-schema-registry
+    ports:
+      - "8081:8081"
+    env_file:
+      - .env
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS}
+      SCHEMA_REGISTRY_KAFKASTORE_TOPIC: _schemas
+      SCHEMA_REGISTRY_KAFKASTORE_SECURITY_PROTOCOL: SASL_SSL
+      SCHEMA_REGISTRY_KAFKASTORE_SASL_MECHANISM: SCRAM-SHA-512
+      SCHEMA_REGISTRY_KAFKASTORE_SASL_JAAS_CONFIG: ${SCHEMA_REGISTRY_KAFKASTORE_SASL_JAAS_CONFIG}
+      SCHEMA_REGISTRY_KAFKASTORE_SSL_TRUSTSTORE_LOCATION: /etc/yandex/YandexInternalRootCA.crt
+      SCHEMA_REGISTRY_KAFKASTORE_SSL_TRUSTSTORE_TYPE: PEM
+      SCHEMA_REGISTRY_KAFKASTORE_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM: https
+    volumes:
+      - ./certs/YandexInternalRootCA.crt:/etc/yandex/YandexInternalRootCA.crt:ro

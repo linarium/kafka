@@ -1,0 +1,9 @@
+bootstrap.servers=rc1a-jgsgh146qedrm60e.mdb.yandexcloud.net:9091,rc1b-g2ihcv06eui2slel.mdb.yandexcloud.net:9091,rc1d-nid72s2343jq9vsd.mdb.yandexcloud.net:9091
+
+security.protocol=SASL_SSL
+sasl.mechanism=SCRAM-SHA-512
+sasl.username=
+sasl.password=
+
+ssl.ca.location=yandex/certs/YandexInternalRootCA.crt
+ssl.endpoint.identification.algorithm=https
